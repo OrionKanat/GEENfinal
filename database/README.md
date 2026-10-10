@@ -1,5 +1,8 @@
 # Fly Fishing Counter Database
 
+## Project URL
+https://oqmdykrkbfdvvufgazsm.supabase.co
+
 ## Purpose
 
 This database stores individual fish catches recorded by an ESP32
