@@ -82,24 +82,19 @@ references before running the script.
 The setup scripts are initial migrations, not scripts that should
 be rerun every time the device connects.
 
-## Authentication and access
+## Prototype API access
 
-The prototype uses one dedicated Supabase Auth test account.
+During testing, signed-out and signed-in clients can read fish
+categories, read catches, and insert catches through the REST API.
 
-That account can:
-- Read fish categories.
-- Read prototype catches.
-- Insert catches.
+Requests require the Supabase publishable/anon key.
+No user login or device token is required.
 
-API updates and deletes are not granted.
-Signed-out visitors have no access to these tables.
+Updates and deletes are not granted through the API.
 
-The device signs in using the test account and receives an access
-token. Database requests include the project publishable/anon key
-and the user's access token.
-
-Passwords, access tokens, refresh tokens, and secret/service-role
-keys must not be committed to GitHub.
+This configuration makes prototype catch locations publicly
+readable and permits anyone with the connection details to submit
+records. Restricted access must be implemented before real-user use.
 
 ## Batch upload format
 
