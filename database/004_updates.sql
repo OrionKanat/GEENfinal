@@ -14,3 +14,9 @@ ALTER TABLE public.mycopy_fish_observations
     ALTER COLUMN longitude SET NOT NULL;
 
 COMMIT;
+
+
+-- Upload history is not required for this prototype.
+-- Preserve caught_at as the original catch timestamp.
+ALTER TABLE public.mycopy_fish_observations
+    DROP COLUMN uploaded_at;
