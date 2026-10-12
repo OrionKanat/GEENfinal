@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Observations</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#f7f8f5; --card:#ffffff; --ink:#1d2a26; --muted:#5d6b66; --line:#d9dfdb; --accent:#1f6f5c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16201d; --card:#1d2a26; --ink:#e8eeeb; --muted:#9fb0aa; --line:#2c3b36; --accent:#4cc2a3; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  aside { width: 380px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  select, input, button { font: inherit; color: inherit; background: var(--card);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; }
+  select { width: 100%; }
+  .dates, .row { display: flex; gap: 8px; margin-top: 8px; }
+  .dates input { flex: 1; min-width: 0; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .scroll { overflow-y: auto; flex: 1; }
+  section { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .cards { display: flex; gap: 8px; }
+  .cards div { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .cards b { display: block; font-size: 20px; }
+  .cards span { color: var(--muted); font-size: 12px; }
+  .sp { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 4px 0; text-align: left; }
+  .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .sp .name { width: 56px; flex: none; }
+  .sp .bar { flex: 1; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .sp .bar i { display: block; height: 100%; }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; }
+  .col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+  .col i { display: block; width: 100%; min-height: 1px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #list { list-style: none; margin: 0; padding: 0; }
+  #list li { display: flex; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  #list li:hover { color: var(--accent); }
+  #list small { color: var(--muted); margin-left: auto; }
+  .empty { color: var(--muted); }
+  #map { flex: 1; }
+  @media (max-width: 760px) {
+    body { flex-direction: column-reverse; }
+    aside { width: 100%; height: 50%; border-right: 0; border-top: 1px solid var(--line); }
+    #map { height: 50%; }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>Field observations</h1>
+    <select id="species" aria-label="Species"><option value="">All species</option></select>
+    <div class="dates">
+      <input type="date" id="from" aria-label="From date">
+      <input type="date" id="to" aria-label="To date">
+    </div>
+    <div class="row"><button id="reset">Reset filters</button><button id="refresh">Refresh data</button></div>
+  </header>
+  <div class="scroll">
+    <section class="cards">
+      <div><b id="n-total">–</b><span>observations</span></div>
+      <div><b id="n-species">–</b><span>species</span></div>
+      <div><b id="n-range">–</b><span>date range</span></div>
+    </section>
+    <section><h2>By species (click to filter)</h2><div id="bySpecies"></div></section>
+    <section><h2>By hour of day</h2><div id="byHour"></div></section>
+    <section><h2>By day</h2><div id="byDay"></div></section>
+    <section><h2>Latest observations</h2><ul id="list"></ul></section>
+  </div>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ====== PUT YOUR SUPABASE DETAILS HERE ======
+const SUPABASE_URL = 'https://fafmzcnktjuywbjzubqg.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_Yyf1e7jno-17qZn8mMw5zg_fUZDEngs';   // publishable key only, never the secret key
+// ============================================
+
+const map = L.map('map').setView([40.015, -105.27], 11);   // change to your area
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const PALETTE = ['#e4572e','#2e86ab','#76b041','#f2a541','#8e5bd9','#17bebb','#d1495b','#6b705c'];
+let colors = {};
+const colorOf = s => colors[s] || '#888';
+const fmt = t => new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const day = t => new Date(t).toLocaleDateString('en-CA');   // YYYY-MM-DD, local time
+
+let ALL = [];   // every observation, filtered in the browser
+
+async function fetchAll() {
+  const PAGE = 1000, rows = [];
+  for (let page = 0; page < 20; page++) {          // up to 20,000 rows
+    const url = `${SUPABASE_URL}/rest/v1/observations` +
+      `?select=id,species,observed_at,lat,lng,device_id&order=observed_at.desc` +
+      `&limit=${PAGE}&offset=${page * PAGE}`;
+    const r = await fetch(url, { headers: { apikey: SUPABASE_KEY } });
+    if (!r.ok) throw new Error('Supabase request failed: ' + r.status);
+    const batch = await r.json();
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+  return rows;
+}
+
+async function loadAll(fit) {
+  if (SUPABASE_URL.includes('YOUR-PROJECT') || SUPABASE_KEY.includes('YOUR_KEY')) {
+    $('n-total').textContent = 'Setup';
+    $('bySpecies').innerHTML = '<div class="empty">Edit SUPABASE_URL and SUPABASE_KEY at the top of the script.</div>';
+    return;
+  }
+  try {
+    ALL = await fetchAll();
+  } catch (e) { console.error(e); $('n-total').textContent = 'Error'; return; }
+
+  // species list + colours from all data
+  const counts = {};
+  ALL.forEach(o => counts[o.species] = (counts[o.species] || 0) + 1);
+  const names = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+  colors = {};
+  names.forEach((s, i) => colors[s] = PALETTE[i % PALETTE.length]);
+  const keep = $('species').value;
+  $('species').innerHTML = '<option value="">All species</option>' +
+    names.map(s => `<option value="${esc(s)}">${esc(s)} (${counts[s]})</option>`).join('');
+  $('species').value = names.includes(keep) ? keep : '';
+  apply(fit);
+}
+
+function apply(fit) {
+  const sp = $('species').value, from = $('from').value, to = $('to').value;
+  render(ALL.filter(o =>
+    (!sp || o.species === sp) &&
+    (!from || day(o.observed_at) >= from) &&
+    (!to || day(o.observed_at) <= to)), fit);
+}
+
+function columns(el, items) {
+  const max = Math.max(1, ...items.map(i => i.count));
+  el.innerHTML = items.length
+    ? `<div class="bars">${items.map(i =>
+        `<div class="col" title="${esc(i.label)}: ${i.count}"><i style="height:${Math.round(i.count / max * 100)}%"></i></div>`).join('')}</div>
+       <div class="axis"><span>${esc(items[0].label)}</span><span>${esc(items[items.length - 1].label)}</span></div>`
+    : '<div class="empty">No data</div>';
+}
+
+function render(obs, fit) {
+  layer.clearLayers();
+  for (const o of obs) {
+    L.circleMarker([o.lat, o.lng], { radius: 8, color: '#fff', weight: 1.5,
+      fillColor: colorOf(o.species), fillOpacity: 0.9 })
+      .bindPopup(`<strong>${esc(o.species)}</strong><br>${esc(fmt(o.observed_at))}<br>${o.lat.toFixed(5)}, ${o.lng.toFixed(5)}`)
+      .addTo(layer);
+  }
+
+  const times = obs.map(o => new Date(o.observed_at).getTime());
+  const counts = {};
+  obs.forEach(o => counts[o.species] = (counts[o.species] || 0) + 1);
+  $('n-total').textContent = obs.length;
+  $('n-species').textContent = Object.keys(counts).length;
+  $('n-range').textContent = obs.length
+    ? (day(Math.min(...times)) === day(Math.max(...times)) ? day(times[0]) : day(Math.min(...times)).slice(5) + ' → ' + day(Math.max(...times)).slice(5))
+    : '–';
+
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const top = sorted.length ? sorted[0][1] : 1;
+  $('bySpecies').innerHTML = sorted.length ? sorted.map(([s, n]) =>
+    `<button class="sp" data-s="${esc(s)}"><i class="sw" style="background:${colorOf(s)}"></i>
+     <span class="name">${esc(s)}</span><span class="bar"><i style="width:${n / top * 100}%;background:${colorOf(s)}"></i></span><b>${n}</b></button>`).join('')
+    : '<div class="empty">No observations match.</div>';
+  document.querySelectorAll('.sp').forEach(b => b.onclick = () => { $('species').value = b.dataset.s; apply(true); });
+
+  const hours = Array(24).fill(0);
+  const days = {};
+  obs.forEach(o => { hours[new Date(o.observed_at).getHours()]++; const d = day(o.observed_at); days[d] = (days[d] || 0) + 1; });
+  columns($('byHour'), hours.map((count, h) => ({ label: h + ':00', count })));
+  columns($('byDay'), Object.keys(days).sort().slice(-30).map(d => ({ label: d, count: days[d] })));
+
+  $('list').innerHTML = obs.slice(0, 50).map((o, i) =>
+    `<li data-i="${i}"><i class="sw" style="background:${colorOf(o.species)}"></i>${esc(o.species)}<small>${esc(fmt(o.observed_at))}</small></li>`).join('')
+    || '<li class="empty">Nothing to show.</li>';
+  document.querySelectorAll('#list li[data-i]').forEach(li => li.onclick = () => {
+    const o = obs[li.dataset.i]; map.flyTo([o.lat, o.lng], 16);
+  });
+
+  if (fit && obs.length) map.fitBounds(obs.map(o => [o.lat, o.lng]), { padding: [40, 40], maxZoom: 16 });
+}
+
+['species', 'from', 'to'].forEach(id => $(id).addEventListener('change', () => apply(true)));
+$('reset').onclick = () => { $('species').value = ''; $('from').value = ''; $('to').value = ''; apply(true); };
+$('refresh').onclick = () => loadAll(false);
+loadAll(true);
+</script>
+</body>
+</html>
