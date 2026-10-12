@@ -8,7 +8,9 @@ CREATE EXTENSION IF NOT EXISTS postgis
 CREATE TABLE public.mycopy_fish_types (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     species_of_fish TEXT NOT NULL UNIQUE,
-    color_of_fish TEXT
+    color_of_fish TEXT,
+
+    device_id TEXT,
 );
 
 CREATE TABLE public.mycopy_fish_observations (
