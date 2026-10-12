@@ -12,8 +12,8 @@ CREATE TABLE public.mycopy_fish_types (
 );
 
 CREATE TABLE public.mycopy_fish_observations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
+    id UUID PRIMARY KEY,
+    
     fish_type_id INTEGER NOT NULL
         REFERENCES public.mycopy_fish_types(id),
 
@@ -23,8 +23,6 @@ CREATE TABLE public.mycopy_fish_observations (
 
     latitude DOUBLE PRECISION,
     longitude DOUBLE PRECISION,
-
-    device_record_id TEXT NOT NULL UNIQUE,
 
     location extensions.geography(Point, 4326)
         GENERATED ALWAYS AS (
@@ -55,8 +53,7 @@ CREATE TABLE public.mycopy_fish_observations (
             (latitude IS NOT NULL AND longitude IS NOT NULL)
         ),
 
-    CONSTRAINT device_record_id_not_blank
-        CHECK (length(trim(device_record_id)) > 0)
+
 );
 
 ALTER TABLE public.mycopy_fish_types
