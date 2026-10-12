@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <time.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <Adafruit_NeoPixel.h>
 // Define the pins for the LEDs
 #define LED_TX_PIN 43
@@ -17,12 +18,14 @@ const char* password = NULL;//null for CU guest
 const size_t CAPACITY = 300;
 const unsigned long BUTTON_DEBOUNCE_MS = 30;
 const unsigned long TRIPLE_CLICK_WINDOW_MS = 1000;
+const String publishableApiKey = "sb_publishable_RO1TPHGUQlLr4tzOEzjBbw_vU2Hk1ue";
+const String url = "https://oqmdykrkbfdvvufgazsm.supabase.co/rest/v1/mycopy_fish_observations?on_conflict=device_record_id";
 struct FishEntry {
-  const char* species;
+  int species;
   String time;
   float latitude;
   float longitude;
-  int id;
+  int device_id;
 };
 FishEntry entries[CAPACITY];//currently stored in ram, needs to be added to flash w/ file system
 size_t entryCount = 0;
@@ -69,6 +72,43 @@ const char* speciesName(Species value) {
   return "Unknown";
 }
 
+String& constructJSON(FishEntry entry, String& jsonBuffer){
+  jsonBuffer = String("{") +
+    "\"fish_type_id\": " + String(entry.species) + ", " +
+    "\"caught_at\": \"" + entry.time + "\", " +
+    "\"latitude\": " + String(entry.latitude, 6) + ", " +
+    "\"longitude\": " + String(entry.longitude, 6) + ", " +
+    "\"device_record_id\": " + String(entry.device_id) +
+    "}";
+  return jsonBuffer;
+}
+
+int postJson(const String& url, const String& jsonBody, String& responseBody) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Cannot send JSON POST: Wi-Fi is not connected");
+    return -1;
+  }
+
+  HTTPClient http;
+  if (!http.begin(url)) {
+    Serial.println("Cannot send JSON POST: failed to initialize HTTP client");
+    return -1;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", publishableApiKey);
+  http.addHeader("prefer",  "resolution=ignore-duplicates,return=representation");
+  const int statusCode = http.POST(jsonBody);
+  if (statusCode > 0) {
+    responseBody = http.getString();
+  } else {
+    Serial.printf("JSON POST failed: %s\n", http.errorToString(statusCode).c_str());
+  }
+
+  http.end();
+  return statusCode;
+}
+
 String getTime() {
   struct tm timeInfo;
   if (!getLocalTime(&timeInfo, 10000)) { //fills timeinfo
@@ -92,11 +132,11 @@ FishEntry generateEntry(){//fake filler entry
       Serial.println("Failed to get time");
       exit(1);
     }
-  entry.species = speciesName(Species(random(0, 4)));
+  entry.species = random(0,4);
   entry.time = time;
   entry.latitude = 0.0; 
   entry.longitude = 0.0;
-  entry.id = 1;
+  entry.device_id = 1;
   return entry;
 }
 
@@ -125,7 +165,7 @@ void printEntries() {
       entries[i].time.c_str(),
       entries[i].latitude,
       entries[i].longitude,
-      entries[i].id
+      entries[i].device_id
     );
   }
 }
