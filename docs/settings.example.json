@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "profile_name": "Default",
+  "device_id": "uuid-of-the-unit",
+  "wifi": [
+    { "ssid": "HomeNetwork", "password": "pass" }
+  ],
+  "buttons": [
+    { "button": 1, "species": "Brown Trout",     "fish_type_id": 1 },
+    { "button": 2, "species": "Rainbow Trout",   "fish_type_id": 2 },
+    { "button": 3, "species": "Brook Trout",     "fish_type_id": 3 },
+    { "button": 4, "species": "Cutthroat Trout", "fish_type_id": 4 }
+  ],
+  "upload_interval_s": 30,
+  "uploads_enabled": true,
+  "gps_max_age_ms": 5000,
+  "debounce_ms": 30,
+  "led_brightness": 50
+}
