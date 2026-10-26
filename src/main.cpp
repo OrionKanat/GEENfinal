@@ -6,62 +6,150 @@
 #include <FFat.h>
 #include <TinyGPSPlus.h>
 #include <time.h>
+#include <ArduinoJson.h>
+#include <base64.h>
 
-const int buttonPins[4] = {18, 17, 16, 15};
-const char* ssid = "CU Guest";
-const char* password = NULL;
-const String publishableApiKey = "sb_publishable_RO1TPHGUQlLr4tzOEzjBbw_vU2Hk1ue";
-const String url = "https://oqmdykrkbfdvvufgazsm.supabase.co/rest/v1/mycopy_fish_observations";
-const String deviceUUID = "REPLACE_WITH_DEVICE_UUID";
-const bool ENABLE_UPLOADS = false;
+// Configuration
+constexpr int SPECIES_COUNT = 4;
+constexpr int buttonPins[4] = {3, 4, 5, 6};//a-d0
+constexpr int gpsRxPin = 21; // D6, rx on esp
+constexpr int gpsSwitchPin = 7;
+const char* nativeSSID = "CU Guest";
+const char* nativePassword = NULL;
+const String publishableApiKey = "sb_publishable_FRTm-YVmfGFomzD9w5MdZg_iSW_wjRr";
+const String secretKey = "SECRET_KEY_HERE"; // Replace with your actual secret key
+const String baseUrl = "https://oqmdykrkbfdvvufgazsm.supabase.co";
+const String deviceUUID = "5bdc3429-6d45-4c49-81a7-c205ae7e6816";
+const bool ENABLE_UPLOADS = true;
 const unsigned long BUTTON_DEBOUNCE_MS = 30;
+int uploadInterval = 30000;//upload interval in milis
+int gpsMaxAge = 5000;//max age of gps fix in milis
 
-enum Species {Brown, Rainbow, Brook, Cutthroat};
+
+enum class Species : int {
+  Button1 = 0,
+  Button2,
+  Button3,
+  Button4,
+  Invalid = -1
+};
+
+struct userSettings {
+  String deviceUUID;
+  String ssid;
+  String password;
+  String speciesNames[SPECIES_COUNT] = {
+    "Brown Trout", "Rainbow Trout", "Brook Trout", "Cutthroat Trout"
+  };
+  int uploadInterval;
+  bool enableUploads;
+  int gpsMaxAge;
+};
 
 struct FishEntry {
-  int species;
+  Species species = Species::Invalid;
   String time;
   float latitude;
   float longitude;
   String device_id;
 };
 
+// Global state
+const char* JSONin;
+JsonDocument doc;
+userSettings userSettingsData;
 TinyGPSPlus gps;
 HardwareSerial gpsSerial(1);
 Preferences settings;
-
-int speciesForButton[4] = {Brown, Rainbow, Brook, Cutthroat};
+const Species speciesForButton[SPECIES_COUNT] = {
+  Species::Button1, Species::Button2, Species::Button3, Species::Button4
+};
 int buttonLastReading[4] = {HIGH, HIGH, HIGH, HIGH};
 int buttonState[4] = {HIGH, HIGH, HIGH, HIGH};
 unsigned long buttonStateChangedAt[4] = {0};
-unsigned long fishCounts[4] = {0};
+unsigned long fishCounts[SPECIES_COUNT] = {0};
 unsigned long totalRows = 0;
 unsigned long uploadedRows = 0;
 unsigned long lastUploadAttempt = 0;
 bool flashReady = false;
 bool syncReady = false;
 
-const char* speciesName(Species value) {
-  switch (value) {
-    case Brown: return "Brown";
-    case Rainbow: return "Rainbow";
-    case Brook: return "Brook";
-    case Cutthroat: return "Cutthroat";
+// Functions
+void loadUserSettings(userSettings &settings, JsonDocument &doc) {
+  JsonObject wifi = doc["wifi"][0];
+
+  settings.deviceUUID = doc["device_id"] | deviceUUID;
+  settings.ssid = wifi["ssid"] | nativeSSID;
+  settings.password = wifi["password"] | nativePassword;
+  for (int i = 0; i < SPECIES_COUNT; i++) {
+    String key = "species" + String(i + 1);
+    settings.speciesNames[i] = doc[key] | settings.speciesNames[i];
   }
-  return "Unknown";
+  settings.uploadInterval = (doc["upload_interval_s"])*1000 | uploadInterval;
+  settings.enableUploads = doc["enableUploads"] | ENABLE_UPLOADS;
+  settings.gpsMaxAge = doc["gps_max_age_ms"] | gpsMaxAge;
 }
 
-int speciesFromName(String name) {
-  name.trim();
-  for (int i = 0; i < 4; i++) {
-    if (name == speciesName(static_cast<Species>(i))) return i;
+int settingsRequest(const String &baseUrl, const JsonDocument &doc) {
+String requestUrl = baseUrl + "/rest/v1/get_settings?p_device_id=" + deviceUUID;
+if (WiFi.status() != WL_CONNECTED) return -1;
+
+  HTTPClient http;
+  http.setTimeout(5000);
+
+  if (!http.begin(requestUrl)) return -1;
+
+  //http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", publishableApiKey);
+  //http.addHeader("prefer", "return=minimal");
+  http.addHeader("x-device-secret", secretKey);
+
+  int statusCode = http.GET();
+
+  if (statusCode >= 200 && statusCode < 300) {
+    String responseBody = http.getString();
+    DeserializationError error = deserializeJson(doc, responseBody);
+    http.end();
+
+    if (error) {
+      Serial.printf("Settings JSON parse failed: %s\n", error.c_str());
+      return statusCode;
+    }
+
+    return statusCode;
   }
-  return -1;
+
+  http.end();
+  return statusCode;
+
+  
+}
+
+int speciesIndex(Species value) {
+  int index = static_cast<int>(value);
+  return index >= 0 && index < SPECIES_COUNT ? index : -1;
+}
+
+int fishTypeId(Species value) {
+  int index = speciesIndex(value);
+  return index < 0 ? -1 : index + 1;
+}
+
+Species speciesForButtonId(int buttonId) {
+  if (buttonId < 1 || buttonId > SPECIES_COUNT) return Species::Invalid;
+  return static_cast<Species>(buttonId - 1);
+}
+
+const String& speciesName(Species value) {
+  static const String unknownSpecies = "Unknown";
+  int index = speciesIndex(value);
+  if (index < 0) return unknownSpecies;
+  return userSettingsData.speciesNames[index];
 }
 
 String constructJSON(const FishEntry& entry) {
   return String("{") +
-    "\"fish_type_id\": " + String(entry.species) + ", " +
+    "\"fish_type_id\": " + String(fishTypeId(entry.species)) + ", " +
     "\"caught_at\": \"" + entry.time + "\", " +
     "\"latitude\": " + String(entry.latitude, 6) + ", " +
     "\"longitude\": " + String(entry.longitude, 6) + ", " +
@@ -79,6 +167,7 @@ int postJson(const String& url, const String& jsonBody, String& responseBody) {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", publishableApiKey);
   http.addHeader("prefer", "return=minimal");
+  http.addHeader("x-device-key", secretKey);
 
   int statusCode = http.POST(jsonBody);
 
@@ -112,7 +201,7 @@ String getTime() {
   return String(timestamp);
 }
 
-FishEntry generateEntry(int species) {
+FishEntry generateEntry(Species species) {
   FishEntry entry{};
   entry.species = species;
   entry.time = getTime();
@@ -122,11 +211,19 @@ FishEntry generateEntry(int species) {
   return entry;
 }
 
-// Existing CSV: button,count,species,timestamp,gpsFix,latitude,longitude
+FishEntry generateEntryNoGPS(Species species) {// set coords to varsity lake for demo purposes
+  FishEntry entry{};
+  entry.species = species;
+  entry.time = getTime();
+  entry.latitude = 40.009849709769675;
+  entry.longitude =  -105.27433817827028;
+  entry.device_id = deviceUUID;
+  return entry;
+}
 
+// Existing CSV: button,count,species,timestamp,gpsFix,latitude,longitude
 FishEntry parseLine(String line) {
   FishEntry entry{};
-  entry.species = -1;
 
   int commas[6];
   int start = 0;
@@ -137,22 +234,21 @@ FishEntry parseLine(String line) {
     start = commas[i] + 1;
   }
 
-  String name = line.substring(commas[1] + 1, commas[2]);
-  entry.species = speciesFromName(name);
+  entry.species = speciesForButtonId(line.substring(0, commas[0]).toInt());
 
-  if (entry.species == -1) return entry;
+  if (entry.species == Species::Invalid) return entry;
 
   entry.time = line.substring(commas[2] + 1, commas[3]);
 
   if (entry.time.isEmpty() || entry.time == "NO_TIME") {
-    entry.species = -1;
+    entry.species = Species::Invalid;
     return entry;
   }
 
   bool gpsFix = line.substring(commas[3] + 1, commas[4]).toInt() == 1;
 
   if (!gpsFix) {
-    entry.species = -1;
+    entry.species = Species::Invalid;
     return entry;
   }
 
@@ -162,7 +258,6 @@ FishEntry parseLine(String line) {
 
   return entry;
 }
-
 
 void loadSavedFish() {
   File file = FFat.open("/fish.csv", "r");
@@ -177,15 +272,15 @@ void loadSavedFish() {
 
     int first = line.indexOf(',');
     int second = line.indexOf(',', first + 1);
-    int third = line.indexOf(',', second + 1);
 
-    if (first < 0 || second < 0 || third < 0) continue;
+    if (first < 0 || second < 0) continue;
 
-    int species = speciesFromName(line.substring(second + 1, third));
-    if (species < 0) continue;
+    Species species = speciesForButtonId(line.substring(0, first).toInt());
+    int index = speciesIndex(species);
+    if (index < 0) continue;
 
     unsigned long count = line.substring(first + 1, second).toInt();
-    if (count > fishCounts[species]) fishCounts[species] = count;
+    if (count > fishCounts[index]) fishCounts[index] = count;
   }
 
   file.close();
@@ -193,13 +288,25 @@ void loadSavedFish() {
 }
 
 bool saveEntry(const FishEntry& entry, int button) {
-  if (!flashReady) return false;
+  int index = speciesIndex(entry.species);
+  if (index < 0) {
+    Serial.println("Invalid species; cannot save");
+    return false;
+  }
+
+  if (!flashReady){
+    Serial.println("Flash not ready; cannot save");
+   return false;
+  }
 
   File file = FFat.open("/fish.csv", "a");
-  if (!file) return false;
+  if (!file) {
+    Serial.println("file not opened");
+    return false;
+  }
 
-  String line = String(button + 1) + "," + String(fishCounts[entry.species] + 1) + "," +
-    speciesName(static_cast<Species>(entry.species)) + "," + entry.time + ",1," +
+  String line = String(button + 1) + "," + String(fishCounts[index] + 1) + "," +
+    speciesName(entry.species) + "," + entry.time + ",1," +
     String(entry.latitude, 6) + "," + String(entry.longitude, 6);
 
   size_t written = file.println(line);
@@ -211,12 +318,22 @@ bool saveEntry(const FishEntry& entry, int button) {
 }
 
 void onButtonPress(int button) {
+  FishEntry entry;
   if (!gps.location.isValid() || gps.location.age() > 5000) {
     Serial.println("Not saved: waiting for GPS fix");
+    Serial.println("We'll fill false coordinates for testing");
+    entry = generateEntryNoGPS(speciesForButton[button]);
+    if (!saveEntry(entry, button)) return;
+    int index = speciesIndex(entry.species);
+    fishCounts[index]++;
+    totalRows++;
+    Serial.printf("Saved %s #%lu | %s | %.6f, %.6f\n",
+    speciesName(entry.species).c_str(), fishCounts[index],
+    entry.time.c_str(), entry.latitude, entry.longitude);
     return;
   }
 
-  FishEntry entry = generateEntry(speciesForButton[button]);
+  entry = generateEntry(speciesForButton[button]);
 
   if (entry.time.isEmpty()) {
     Serial.println("Not saved: waiting for time");
@@ -228,15 +345,16 @@ void onButtonPress(int button) {
     return;
   }
 
-  fishCounts[entry.species]++;
+  int index = speciesIndex(entry.species);
+  fishCounts[index]++;
   totalRows++;
 
   Serial.printf("Saved %s #%lu | %s | %.6f, %.6f\n",
-    speciesName(static_cast<Species>(entry.species)), fishCounts[entry.species],
+    speciesName(entry.species).c_str(), fishCounts[index],
     entry.time.c_str(), entry.latitude, entry.longitude);
 }
 
-// Store last acknowledged row so resets don't resend it.
+// Store the last acknowledged row so resets don't resend it.
 void uploadSavedFish() {
   if (!syncReady || !flashReady || WiFi.status() != WL_CONNECTED) return;
 
@@ -255,9 +373,9 @@ void uploadSavedFish() {
 
     FishEntry entry = parseLine(line);
 
-    if (entry.species !=-1) {
+    if (entry.species != Species::Invalid) {
       String response;
-      int status = postJson(url, constructJSON(entry), response);
+      int status = postJson(baseUrl + "/rest/v1/mycopy_fish_observations", constructJSON(entry), response);
 
       if (status < 200 || status >= 300) {
         Serial.printf("Upload failed at row %lu (HTTP %d): %s\n",
@@ -308,11 +426,15 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid, password);
+  WiFi.begin(userSettingsData.ssid, userSettingsData.password);
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 
   Serial.println("Ready: press a fish button");
   if (!ENABLE_UPLOADS) Serial.println("Supabase uploads OFF for testing");
+  int status = settingsRequest(baseUrl, doc);
+if (status >= 200 && status < 300) {
+  loadUserSettings(userSettingsData, doc);
+}
 }
 
 void loop() {
@@ -335,5 +457,6 @@ void loop() {
   if (ENABLE_UPLOADS && millis() - lastUploadAttempt >= 30000) {
     lastUploadAttempt = millis();
     uploadSavedFish();
+    Serial.printf("Upload attempt complete\n");
   }
 }
