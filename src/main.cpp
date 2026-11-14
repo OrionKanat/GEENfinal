@@ -8,6 +8,8 @@
 #include <TinyGPS++.h>
 #include <time.h>
 #include <ArduinoJson.h>
+#include <esp_sleep.h>
+#include <driver/gpio.h>
 
 // Configuration
 constexpr int SPECIES_COUNT = 4;
@@ -20,10 +22,13 @@ const String secretKey = "69956812af394b9fa65cfd6cf85debaea25724b67fdb47beb1f0ee
 const String baseUrl = "https://oqmdykrkbfdvvufgazsm.supabase.co";
 const String deviceUUID = "5bdc3429-6d45-4c49-81a7-c205ae7e6816";//make uuid generate
 const bool ENABLE_UPLOADS = true;
-const unsigned long BUTTON_DEBOUNCE_MS = 200;
+const unsigned long BUTTON_DEBOUNCE_MS = 300;
 int defaultUploadInterval = 30000;//upload interval in milis
 int defaultGpsMaxAge = 5000;//max age of gps fix in milis
 bool gpsHasfix = false;
+int pendingButton = -1;
+bool gpsFixWaitInProgress = false;
+const unsigned long GPS_FIX_WAIT_TIMEOUT_MS = 5000;
 
 
 enum class Species : int {
@@ -63,15 +68,17 @@ Preferences settings;
 const Species speciesForButton[SPECIES_COUNT] = {
   Species::Button1, Species::Button2, Species::Button3, Species::Button4
 };
-int buttonLastReading[4] = {HIGH, HIGH, HIGH, HIGH};
 int buttonState[4] = {HIGH, HIGH, HIGH, HIGH};
-unsigned long buttonStateChangedAt[4] = {0};
+unsigned long lastButtonPressAt[4] = {0};
 unsigned long fishCounts[SPECIES_COUNT] = {0};
 unsigned long totalRows = 0;
 unsigned long uploadedRows = 0;
-unsigned long lastUploadAttempt = 0;
 bool flashReady = false;
 bool syncReady = false;
+bool buttonWakeupReady = false;
+bool wifiSyncPending = false;
+unsigned long wifiSyncStartedAt = 0;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 10000;
 
 // Functions
 
@@ -92,6 +99,148 @@ void loadUserSettings(userSettings& settings, JsonDocument& doc) {
 
 bool isWifiConnected() {
   return WiFi.status() == WL_CONNECTED;
+}
+
+bool connectWifi(unsigned long timeoutMs) {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(userSettingsData.ssid.c_str(), userSettingsData.password.c_str());
+
+  unsigned long wifiStartedAt = millis();
+  while (!isWifiConnected() && millis() - wifiStartedAt < timeoutMs) {
+    delay(100);
+  }
+
+  return isWifiConnected();
+}
+
+void disconnectWifi() {
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+}
+
+void beginWifiConnection() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(userSettingsData.ssid.c_str(), userSettingsData.password.c_str());
+}
+
+bool configureButtonWakeup() {
+  esp_err_t result = esp_sleep_enable_gpio_wakeup();
+  if (result != ESP_OK) {
+    Serial.printf("Could not enable GPIO light-sleep wakeup (%d)\n", result);
+    return false;
+  }
+
+  for (int i = 0; i < 4; i++) {
+    result = gpio_wakeup_enable(
+      static_cast<gpio_num_t>(buttonPins[i]), GPIO_INTR_LOW_LEVEL);
+    if (result != ESP_OK) {
+      Serial.printf("Could not enable wakeup for button GPIO %d (%d)\n",
+        buttonPins[i], result);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool buttonsReleased() {
+  for (int i = 0; i < 4; i++) {
+    if (buttonState[i] != HIGH || digitalRead(buttonPins[i]) != HIGH) return false;
+  }
+  return true;
+}
+
+void queueButtonPress(int button) {
+  unsigned long now = millis();
+  if (now - lastButtonPressAt[button] < BUTTON_DEBOUNCE_MS) return;
+
+  lastButtonPressAt[button] = now;
+  if (pendingButton == -1) {
+    pendingButton = button;
+  } else {
+    Serial.printf("Ignoring button %d while another press is pending\n", button + 1);
+  }
+}
+
+void captureWokenButton() {
+  uint64_t wakeStatus = esp_sleep_get_gpio_wakeup_status();
+  int wakeButton = -1;
+
+  for (int i = 0; i < 4; i++) {
+    if (wakeStatus & (1ULL << buttonPins[i])) {
+      buttonState[i] = LOW;
+      if (wakeButton == -1) wakeButton = i;
+    }
+  }
+
+  if (wakeButton == -1) {
+    for (int i = 0; i < 4; i++) {
+      if (digitalRead(buttonPins[i]) == LOW) {
+        buttonState[i] = LOW;
+        wakeButton = i;
+        break;
+      }
+    }
+  }
+
+  if (wakeButton >= 0) queueButtonPress(wakeButton);
+}
+
+void pollButtonPresses() {
+  for (int i = 0; i < 4; i++) {
+    int reading = digitalRead(buttonPins[i]);
+    if (reading == HIGH) {
+      buttonState[i] = HIGH;
+    } else if (buttonState[i] == HIGH) {
+      buttonState[i] = LOW;
+      queueButtonPress(i);
+    }
+  }
+}
+
+bool waitForFreshFix(unsigned long timeoutMs) {
+  gpsFixWaitInProgress = true;
+  gpsHasfix = false;
+
+  while (gpsSerial.available()) gpsSerial.read();
+  (void)gps.location.lat();
+  (void)gps.date.value();
+  (void)gps.time.value();
+
+  unsigned long startedAt = millis();
+  while (millis() - startedAt < timeoutMs) {
+    while (gpsSerial.available()) gps.encode(gpsSerial.read());
+    pollButtonPresses();
+
+    if (gps.location.isUpdated() && gps.location.isValid() &&
+        gps.date.isUpdated() && gps.date.isValid() &&
+        gps.time.isUpdated() && gps.time.isValid()) {
+      gpsHasfix = true;
+      break;
+    }
+
+    delay(10);
+  }
+
+  gpsFixWaitInProgress = false;
+  return gpsHasfix;
+}
+
+void enterLightSleep() {
+  if (wifiSyncPending || pendingButton != -1 || gpsFixWaitInProgress ||
+      !buttonsReleased()) return;
+
+  disconnectWifi();
+  if (!buttonWakeupReady) return;
+
+  esp_err_t result = esp_light_sleep_start();
+  captureWokenButton();
+  if (result != ESP_OK) {
+    Serial.printf("Light sleep failed (%d)\n", result);
+    buttonWakeupReady = false;
+  }
 }
 
 int settingsRequest(const String &baseUrl, JsonDocument &doc) {
@@ -262,9 +411,9 @@ String getTime() {
 
 FishEntry generateEntry(Species species) {
   FishEntry entry{};
-  String time = getTime() =="" ? "NO_TIME" : getTime();
+  String time = getTime();
   entry.species = species;
-  entry.time = time;
+  entry.time = time.isEmpty() ? "NO_TIME" : time;
   entry.latitude = gps.location.lat();
   entry.longitude = gps.location.lng();
   entry.device_id = deviceUUID;
@@ -281,7 +430,7 @@ FishEntry generateEntryNoGPS(Species species) {// set coords to varsity lake for
   entry.device_id = deviceUUID;
   return entry;
 }
-  */
+  
 
 // Existing CSV: button,count,species,timestamp,gpsFix,latitude,longitude
 FishEntry parseLine(String line) {
@@ -379,7 +528,7 @@ bool clearMem() {
   return true;
 }
 
-bool saveEntry(const FishEntry& entry) {
+bool saveEntry(const FishEntry& entry, bool gpsFix) {
   int index = speciesIndex(entry.species);
   if (index < 0) {
     Serial.println("Invalid species; cannot save");
@@ -398,7 +547,7 @@ bool saveEntry(const FishEntry& entry) {
   }
 
   String line = String(fishTypeId(entry.species)) + "," + String(fishCounts[index] + 1) + "," +
-    speciesName(entry.species) + "," + entry.time + ",1," +
+    speciesName(entry.species) + "," + entry.time + "," + (gpsFix ? "1," : "0,") +
     String(entry.latitude, 6) + "," + String(entry.longitude, 6);
 
   size_t written = file.println(line);
@@ -425,20 +574,20 @@ void onButtonPress(int button) {
     entry.time.c_str(), entry.latitude, entry.longitude);
     return;
   }
-    */
-   if(!gpsHasfix) {
-     Serial.println("Not saved: waiting for GPS fix");
-     return;
-   }
-
+    
   entry = generateEntry(speciesForButton[button]);
 
-  if (entry.time.isEmpty()) {
-    Serial.println("Not saved: waiting for time");
+  if (entry.time.isEmpty() || entry.time == "NO_TIME") {
+    Serial.println("ERROR: catch not saved because no valid timestamp is available");
     return;
   }
 
-  if (!saveEntry(entry)) {
+  if (!gpsHasfix) {
+    Serial.printf("WARNING: saving %s with last-known coordinates and gpsFix=0; it will be skipped during upload\n",
+      speciesName(entry.species).c_str());
+  }
+
+  if (!saveEntry(entry, gpsHasfix)) {
     Serial.println("Not saved: flash write failed");
     return;
   }
@@ -491,6 +640,7 @@ void uploadSavedFish() {
       break;
     }
 
+    // This is a processed-row cursor; no-fix rows are skipped, not uploaded.
     uploadedRows = row;
     Serial.printf("Processed row %lu\n", row);
   }
@@ -504,10 +654,9 @@ void setup() {
 
   for (int i = 0; i < 4; i++) {
     pinMode(buttonPins[i], INPUT_PULLUP);
-    buttonLastReading[i] = digitalRead(buttonPins[i]);
-    buttonState[i] = buttonLastReading[i];
-    buttonStateChangedAt[i] = millis();
+    buttonState[i] = HIGH;
   }
+  buttonWakeupReady = configureButtonWakeup();
 
   gpsSerial.begin(9600, SERIAL_8N1, gpsRxPin, -1);
 
@@ -551,18 +700,9 @@ void setup() {
   userSettingsData.ssid = defaultSSID;
   userSettingsData.password = defaultPassword ? defaultPassword : "";
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(userSettingsData.ssid.c_str(), userSettingsData.password.c_str());
-
-  unsigned long wifiStartedAt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStartedAt < 10000) {
-    delay(100);
-  }
-
   Serial.println("Ready: press a fish button");
   if (!ENABLE_UPLOADS) Serial.println("Supabase uploads OFF for testing");
-  if (WiFi.status() == WL_CONNECTED) {
+  if (connectWifi(WIFI_CONNECT_TIMEOUT_MS)) {
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     int status = settingsRequest(baseUrl, doc);
     if (status >= 200 && status < 300) {
@@ -573,6 +713,7 @@ void setup() {
   } else {
     Serial.println("WiFi connection failed; using built-in settings");
   }
+  disconnectWifi();
  // clearMem();
     
 }
@@ -582,32 +723,34 @@ void loop() {
  //testButtons();
   
   while (gpsSerial.available()) gps.encode(gpsSerial.read());
-  gpsHasfix = gps.location.isValid();
-  if(gpsHasfix) {
-   // Serial.println("GPS has a valid fix");
+  pollButtonPresses();
+
+  bool buttonHandled = false;
+  if (pendingButton >= 0) {
+    int button = pendingButton;
+    pendingButton = -1;
+    waitForFreshFix(GPS_FIX_WAIT_TIMEOUT_MS);
+    onButtonPress(button);
+    buttonHandled = true;
   }
 
-  for (int i = 0; i < 4; i++) {
-    int reading = digitalRead(buttonPins[i]);
-
-    if (reading != buttonLastReading[i]) {
-      buttonLastReading[i] = reading;
-      buttonStateChangedAt[i] = millis();
-    }
-
-    if (millis() - buttonStateChangedAt[i] >= BUTTON_DEBOUNCE_MS && reading != buttonState[i]) {
-      buttonState[i] = reading;
-      if (reading == LOW && i!=1) onButtonPress(i);
-      else if (reading == HIGH && i ==1) onButtonPress(i);
-    }
+  if (buttonHandled && ENABLE_UPLOADS && syncReady && flashReady &&
+      totalRows > uploadedRows && !wifiSyncPending) {
+    wifiSyncPending = true;
+    wifiSyncStartedAt = millis();
+    beginWifiConnection();
   }
 
-  if (ENABLE_UPLOADS && millis() - lastUploadAttempt >= userSettingsData.uploadInterval) {
-    lastUploadAttempt = millis();
+  if (wifiSyncPending && isWifiConnected()) {
     uploadSavedFish();
-    //Serial.printf("Upload attempt complete\n");
+    wifiSyncPending = false;
+  } else if (wifiSyncPending &&
+      millis() - wifiSyncStartedAt >= WIFI_CONNECT_TIMEOUT_MS) {
+    Serial.println("WiFi connection failed; queued fish will upload after a later button press");
+    wifiSyncPending = false;
   }
-    
-    
-  
+
+  if (wifiSyncPending) delay(10);
+  enterLightSleep();
 }
+
