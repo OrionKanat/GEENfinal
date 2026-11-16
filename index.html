@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Observations</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#f7f8f5; --card:#ffffff; --ink:#1d2a26; --muted:#5d6b66; --line:#d9dfdb; --accent:#1f6f5c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16201d; --card:#1d2a26; --ink:#e8eeeb; --muted:#9fb0aa; --line:#2c3b36; --accent:#4cc2a3; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  aside { width: 380px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  select, input, button { font: inherit; color: inherit; background: var(--card);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; }
+  select { width: 100%; }
+  .dates, .row { display: flex; gap: 8px; margin-top: 8px; }
+  .dates input { flex: 1; min-width: 0; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .scroll { overflow-y: auto; flex: 1; }
+  section { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .cards { display: flex; gap: 8px; }
+  .cards div { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .cards b { display: block; font-size: 20px; }
+  .cards span { color: var(--muted); font-size: 12px; }
+  .sp { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 4px 0; text-align: left; }
+  .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .sp .name { width: 96px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp .bar { flex: 1; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .sp .bar i { display: block; height: 100%; }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; }
+  .col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+  .col i { display: block; width: 100%; min-height: 1px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #list { list-style: none; margin: 0; padding: 0; }
+  #list li { display: flex; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  #list li:hover { color: var(--accent); }
+  #list small { color: var(--muted); margin-left: auto; }
+  .empty { color: var(--muted); }
+  #map { flex: 1; }
+  @media (max-width: 760px) {
+    body { flex-direction: column-reverse; }
+    aside { width: 100%; height: 50%; border-right: 0; border-top: 1px solid var(--line); }
+    #map { height: 50%; }
+  }
+
+  #login { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 16px; }
+  #login[hidden] { display: none; }
+  #login .card { width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  #login h2 { font-size: 20px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 0 0 4px; }
+  #login p { margin: 0 0 6px; color: var(--muted); }
+  #login label { display: block; margin-top: 12px; }
+  #login input { width: 100%; margin-top: 4px; }
+  #login .row { margin-top: 16px; }
+  #loginMsg { margin-top: 10px; min-height: 1.4em; font-size: 13px; color: #d1495b; }
+  #loginMsg.ok { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <form id="loginForm" class="card">
+    <h2>Sign in</h2>
+    <p>Log in to see your own observations.</p>
+    <label>Email <input id="email" type="email" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" minlength="6" required></label>
+    <div id="loginMsg" role="alert"></div>
+    <div class="row"><button type="submit">Sign in</button><button type="button" id="signup">Create account</button></div>
+  </form>
+</div>
+<aside>
+  <header>
+    <h1>Field observations</h1>
+    <select id="species" aria-label="Species"><option value="">All species</option></select>
+    <div class="dates">
+      <input type="date" id="from" aria-label="From date">
+      <input type="date" id="to" aria-label="To date">
+    </div>
+    <div class="row"><button id="reset">Reset filters</button><button id="refresh">Refresh data</button></div>
+    <label style="display:block;margin-top:8px;font-size:12px"><input id="showPressure" type="checkbox" checked> Show fishing pressure
+      <span style="display:block;height:8px;margin-top:4px;border-radius:4px;background:linear-gradient(to right,hsl(270,80%,48%),hsl(225,80%,48%),hsl(180,80%,48%),hsl(135,80%,48%),hsl(90,80%,48%),hsl(45,80%,48%),hsl(0,80%,48%))"></span>
+      <span style="display:flex;justify-content:space-between;color:var(--muted)"><span>lower</span><span>highest</span></span></label>
+    <div id="userbar" class="empty" style="margin-top:8px;font-size:12px">Signed in as <b id="who"></b> · <button id="signout" style="padding:2px 8px;font-size:12px">Sign out</button></div>
+    <div class="row" style="margin-top:8px">
+      <input id="claimCode" placeholder="Device code" maxlength="20" autocomplete="off" style="flex:1">
+      <button id="claimBtn" type="button">Add device</button>
+    </div>
+    <div id="claimMsg" style="font-size:12px;margin-top:4px"></div>
+    <details id="settingsBox" style="margin-top:10px" hidden>
+      <summary>Device settings</summary>
+      <select id="setDevice" style="width:100%;margin:6px 0"></select>
+      <div style="font-size:12px">Wi-Fi networks (tried in order)</div>
+      <div class="row"><input id="wifiSsid0" placeholder="Network name" style="flex:1;min-width:0"><input id="wifiPw0" type="password" placeholder="Password" autocomplete="new-password" style="flex:1;min-width:0"></div>
+      <div class="row"><input id="wifiSsid1" placeholder="Network name" style="flex:1;min-width:0"><input id="wifiPw1" type="password" placeholder="Password" autocomplete="new-password" style="flex:1;min-width:0"></div>
+      <div class="row"><input id="wifiSsid2" placeholder="Network name" style="flex:1;min-width:0"><input id="wifiPw2" type="password" placeholder="Password" autocomplete="new-password" style="flex:1;min-width:0"></div>
+      <div style="font-size:12px;margin-top:6px">Species for each button</div>
+      <datalist id="speciesList"></datalist>
+      <div class="row"><label style="flex:1">1 <input id="btnSp0" list="speciesList" maxlength="30" style="width:100%"></label><label style="flex:1">2 <input id="btnSp1" list="speciesList" maxlength="30" style="width:100%"></label></div>
+      <div class="row"><label style="flex:1">3 <input id="btnSp2" list="speciesList" maxlength="30" style="width:100%"></label><label style="flex:1">4 <input id="btnSp3" list="speciesList" maxlength="30" style="width:100%"></label></div>
+      <div class="row" style="margin-top:6px">
+        <label>Upload every (s) <input id="setInterval" type="number" min="10" max="3600" value="30" style="width:70px"></label>
+        <label>LED brightness <input id="setLed" type="number" min="0" max="100" value="50" style="width:60px"></label>
+      </div>
+      <label style="display:block;margin-top:6px"><input id="setUploads" type="checkbox" checked> Uploads enabled</label>
+      <button id="saveSettings" type="button" style="margin-top:6px">Save settings</button>
+      <div id="setMsg" style="font-size:12px;margin-top:4px"></div>
+    </details>
+  </header>
+  <div class="scroll">
+    <section class="cards">
+      <div><b id="n-total">–</b><span>observations</span></div>
+      <div><b id="n-species">–</b><span>species</span></div>
+      <div><b id="n-range">–</b><span>date range</span></div>
+    </section>
+    <section><h2>By species (click to filter)</h2><div id="bySpecies"></div></section>
+    <section><h2>By hour of day</h2><div id="byHour"></div></section>
+    <section><h2>By day</h2><div id="byDay"></div></section>
+    <section><h2>Latest observations</h2><ul id="list"></ul></section>
+  </div>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ====== SETTINGS (publishable key only, never the secret key) ======
+const SB_URL = 'https://oqmdykrkbfdvvufgazsm.supabase.co';
+const SB_KEY = 'sb_publishable_FRTm-YVmfGFomzD9w5MdZg_iSW_wjRr';
+const TABLE = 'public_points';      // a view that the database limits to the signed-in user
+const ALLOW_SIGNUP = true;          // false hides the "Create account" button
+const LOC_DECIMALS = 5;             // catches whose coordinates match to this many decimals share one dot (4 = about 10 m)
+// ====================================================================
+
+const map = L.map('map').setView([40.015, -105.27], 11);   // change to your area
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ---------- species order and colors ----------
+const PALETTE = ['#e4572e','#2e86ab','#76b041','#f2a541','#8e5bd9','#17bebb','#d1495b','#6b705c'];
+const SPECIES_ORDER = ['Brown Trout', 'Rainbow Trout', 'Brook Trout', 'Cutthroat Trout'];
+const SPECIES_COLORS = {
+  'Brown Trout':     '#8b5a2b',
+  'Rainbow Trout':   '#2e86ab',
+  'Brook Trout':     '#f2a541',
+  'Cutthroat Trout': '#e4572e'
+};
+const speciesRank = s => { const i = SPECIES_ORDER.indexOf(s); return i < 0 ? 99 : i; };
+let colors = {};
+const colorOf = s => colors[s] || '#888';
+
+const fmt = t => new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const day = t => new Date(t).toLocaleDateString('en-CA');   // YYYY-MM-DD, local time
+
+// ---------- map highlight ----------
+let markers = {};
+let hi = null;
+let popOpen = false;
+const locKey = o => o.lat.toFixed(LOC_DECIMALS) + ',' + o.lng.toFixed(LOC_DECIMALS);
+
+function highlight(o) {
+  if (hi) { map.removeLayer(hi); hi = null; }
+  if (!o) return;
+  hi = L.circleMarker([o.lat, o.lng], { radius: 16, color: '#ffd400', weight: 4, fill: false, interactive: false }).addTo(map);
+}
+// remove the ring only when no popup is open afterwards (switching popups must keep it)
+map.on('popupopen', () => { popOpen = true; });
+map.on('popupclose', () => {
+  popOpen = false;
+  setTimeout(() => { if (!popOpen) highlight(null); }, 0);
+});
+
+// ---------- fishing pressure layer: smooth, fading heat surface ----------
+map.createPane('pressure');
+map.getPane('pressure').style.zIndex = 350;      // below your own dots
+
+function hslToRgb(h, s, l) {                      // h 0-360, s and l 0-1
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+
+const PressureLayer = L.Layer.extend({
+  initialize() { this.cells = []; },
+  onAdd(m) {
+    this._canvas = L.DomUtil.create('canvas', 'leaflet-zoom-hide');
+    this._canvas.style.pointerEvents = 'none';
+    m.getPane('pressure').appendChild(this._canvas);
+    m.on('moveend zoomend resize', this._redraw, this);
+    this._redraw();
+  },
+  onRemove(m) {
+    m.off('moveend zoomend resize', this._redraw, this);
+    L.DomUtil.remove(this._canvas);
+  },
+  setCells(c) { this.cells = c; this._redraw(); },
+  clearLayers() { this.setCells([]); },
+  _redraw() {
+    const m = this._map; if (!m || !this._canvas) return;
+    const size = m.getSize(), pad = 0.25;
+    const w = Math.round(size.x * (1 + 2 * pad)), h = Math.round(size.y * (1 + 2 * pad));
+    const origin = L.point(-size.x * pad, -size.y * pad);
+    const cv = this._canvas; cv.width = w; cv.height = h;
+    L.DomUtil.setPosition(cv, m.containerPointToLayerPoint(origin));
+    const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, w, h);
+    if (!this.cells.length) return;
+
+    // how big is one 0.01 degree square on screen right now
+    const c0 = this.cells[0], p0 = m.latLngToContainerPoint([c0.lat, c0.lng]);
+    const sx = Math.max(4, Math.abs(m.latLngToContainerPoint([c0.lat, c0.lng + 0.01]).x - p0.x) * 0.5);
+    const sy = Math.max(4, Math.abs(m.latLngToContainerPoint([c0.lat + 0.01, c0.lng]).y - p0.y) * 0.5);
+    const pts = this.cells.map(c => {
+      const p = m.latLngToContainerPoint([c.lat, c.lng]);
+      return { x: p.x - origin.x, y: p.y - origin.y, t: c.t };
+    });
+
+    const step = 5, gw = Math.ceil(w / step), gh = Math.ceil(h / step);
+    const small = document.createElement('canvas'); small.width = gw; small.height = gh;
+    const sctx = small.getContext('2d'), img = sctx.createImageData(gw, gh);
+    for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+      const x = gx * step + step / 2, y = gy * step + step / 2;
+      let sw = 0, swt = 0;
+      for (const p of pts) {
+        const dx = (x - p.x) / sx, dy = (y - p.y) / sy, d2 = dx * dx + dy * dy;
+        if (d2 > 9) continue;
+        const wt = Math.exp(-d2 / 2); sw += wt; swt += wt * p.t;
+      }
+      if (sw < 0.02) continue;
+      const [r, g, b] = hslToRgb(270 - 270 * (swt / sw), 0.8, 0.48);
+      const i = (gy * gw + gx) * 4;
+      img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b;
+      img.data[i + 3] = Math.round(Math.min(1, sw) * 0.55 * 255);
+    }
+    sctx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(small, 0, 0, gw * step, gh * step);   // scaling up smooths it
+  }
+});
+const pressureLayer = new PressureLayer();
+
+// ---------- accounts (Supabase Auth over plain fetch) ----------
+let session = null;                                   // { access_token, refresh_token, user }
+try { session = JSON.parse(sessionStorage.getItem('sb_session')); } catch (e) {}
+function setSession(s) {
+  session = s;
+  if (s) sessionStorage.setItem('sb_session', JSON.stringify(s)); else sessionStorage.removeItem('sb_session');
+}
+async function authCall(path, body) {
+  const r = await fetch(`${SB_URL}/auth/v1/${path}`, {
+    method: 'POST', headers: { apikey: SB_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error_description || data.msg || data.message || ('Error ' + r.status));
+  return data;
+}
+async function refreshSession() {
+  if (!session || !session.refresh_token) return false;
+  try { setSession(await authCall('token?grant_type=refresh_token', { refresh_token: session.refresh_token })); return true; }
+  catch (e) { setSession(null); return false; }
+}
+function showLogin(msg, ok) {
+  $('login').hidden = false;
+  $('loginMsg').textContent = msg || '';
+  $('loginMsg').className = ok ? 'ok' : '';
+  ALL = []; render([], false);                        // clear anything still on screen
+  pressureLayer.clearLayers();                        // and the pressure surface
+}
+
+$('signup').style.display = ALLOW_SIGNUP ? '' : 'none';
+$('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('loginMsg').textContent = 'Signing in...'; $('loginMsg').className = 'ok';
+  try {
+    setSession(await authCall('token?grant_type=password', { email: $('email').value.trim(), password: $('password').value }));
+    $('password').value = '';
+    start();
+  } catch (err) { showLogin(err.message); }
+});
+$('signup').addEventListener('click', async () => {
+  const email = $('email').value.trim(), password = $('password').value;
+  if (!email || password.length < 6) { showLogin('Enter an email and a password of at least 6 characters.'); return; }
+  try {
+    const d = await authCall('signup?redirect_to=' + encodeURIComponent('https://roldinee.github.io/field-map/'), { email, password });
+    if (d.access_token) { setSession(d); $('password').value = ''; start(); }
+    else showLogin('Account created. Check your email to confirm it, then sign in.', true);
+  } catch (err) { showLogin(err.message); }
+});
+$('signout').onclick = async () => {
+  if (session) fetch(`${SB_URL}/auth/v1/logout`, { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token } }).catch(() => {});
+  setSession(null); showLogin('Signed out.', true);
+};
+
+// ---------- data ----------
+let ALL = [];
+
+async function api(url) {
+  const call = () => fetch(url, { headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token } });
+  let r = await call();
+  if (r.status === 401 && await refreshSession()) r = await call();
+  if (r.status === 401) throw new Error('AUTH');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function fetchAll() {
+  const PAGE = 1000, rows = [];
+  for (let page = 0; page < 20; page++) {
+    const batch = await api(`${SB_URL}/rest/v1/${TABLE}?select=species,observed_at,lat,lng` +
+      `&order=observed_at.desc&limit=${PAGE}&offset=${page * PAGE}`);
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+  return rows;
+}
+
+async function loadAll(fit) {
+  try { ALL = await fetchAll(); }
+  catch (e) {
+    if (e.message === 'AUTH') { setSession(null); showLogin('Your session expired. Please sign in again.'); return; }
+    console.error(e); $('n-total').textContent = 'Error'; return;
+  }
+  const counts = {};
+  ALL.forEach(o => counts[o.species] = (counts[o.species] || 0) + 1);
+  const names = Object.keys(counts).sort((a, b) => speciesRank(a) - speciesRank(b) || a.localeCompare(b));
+  colors = {};
+  let extra = 0;
+  names.forEach(s => colors[s] = SPECIES_COLORS[s] || PALETTE[(4 + extra++) % PALETTE.length]);
+  const keep = $('species').value;
+  $('species').innerHTML = '<option value="">All species</option>' +
+    names.map(s => `<option value="${esc(s)}">${esc(s)} (${counts[s]})</option>`).join('');
+  $('species').value = names.includes(keep) ? keep : '';
+  apply(fit);
+}
+
+function apply(fit) {
+  const sp = $('species').value, from = $('from').value, to = $('to').value;
+  render(ALL.filter(o =>
+    (!sp || o.species === sp) &&
+    (!from || day(o.observed_at) >= from) &&
+    (!to || day(o.observed_at) <= to)), fit);
+}
+
+function columns(el, items) {
+  const max = Math.max(1, ...items.map(i => i.count));
+  el.innerHTML = items.length
+    ? `<div class="bars">${items.map(i =>
+        `<div class="col" title="${esc(i.label)}: ${i.count}"><i style="height:${Math.round(i.count / max * 100)}%"></i></div>`).join('')}</div>
+       <div class="axis"><span>${esc(items[0].label)}</span><span>${esc(items[items.length - 1].label)}</span></div>`
+    : '<div class="empty">No data</div>';
+}
+
+function render(obs, fit) {
+  layer.clearLayers();
+  highlight(null);
+  markers = {};
+
+  // one dot per spot; popup lists every catch there
+  const groups = {};
+  obs.forEach(o => { (groups[locKey(o)] = groups[locKey(o)] || []).push(o); });
+  Object.entries(groups).forEach(([k, g]) => {
+    const html = g.slice(0, 20).map(o =>
+      `<strong>${esc(o.species)}</strong><br>${esc(fmt(o.observed_at))}`).join('<hr>') +
+      (g.length > 20 ? `<hr><small>and ${g.length - 20} more</small>` : '') +
+      (g.length > 1 ? `<hr><small>${g.length} catches at this spot</small>` : '');
+    markers[k] = L.circleMarker([g[0].lat, g[0].lng], {
+      radius: g.length > 1 ? 11 : 8, color: '#fff', weight: 1.5,
+      fillColor: colorOf(g[0].species), fillOpacity: 0.9 })
+      .bindPopup(html).addTo(layer).on('click', () => highlight(g[0]));
+  });
+
+  const times = obs.map(o => new Date(o.observed_at).getTime());
+  const counts = {};
+  obs.forEach(o => counts[o.species] = (counts[o.species] || 0) + 1);
+  $('n-total').textContent = obs.length;
+  $('n-species').textContent = Object.keys(counts).length;
+  $('n-range').textContent = obs.length
+    ? (day(Math.min(...times)) === day(Math.max(...times)) ? day(times[0]) : day(Math.min(...times)).slice(5) + ' → ' + day(Math.max(...times)).slice(5))
+    : '–';
+
+  const sorted = Object.entries(counts).sort((a, b) => speciesRank(a[0]) - speciesRank(b[0]) || a[0].localeCompare(b[0]));
+  const top = sorted.length ? Math.max(...sorted.map(x => x[1])) : 1;
+  $('bySpecies').innerHTML = sorted.length ? sorted.map(([s, n]) =>
+    `<button class="sp" data-s="${esc(s)}"><i class="sw" style="background:${colorOf(s)}"></i>
+     <span class="name" title="${esc(s)}">${esc(s)}</span><span class="bar"><i style="width:${n / top * 100}%;background:${colorOf(s)}"></i></span><b>${n}</b></button>`).join('')
+    : '<div class="empty">No observations are linked to your account yet.</div>';
+  document.querySelectorAll('.sp').forEach(b => b.onclick = () => { $('species').value = b.dataset.s; apply(true); });
+
+  const hours = Array(24).fill(0);
+  const days = {};
+  obs.forEach(o => { hours[new Date(o.observed_at).getHours()]++; const d = day(o.observed_at); days[d] = (days[d] || 0) + 1; });
+  columns($('byHour'), hours.map((count, h) => ({ label: h + ':00', count })));
+  columns($('byDay'), Object.keys(days).sort().slice(-30).map(d => ({ label: d, count: days[d] })));
+
+  $('list').innerHTML = obs.slice(0, 50).map((o, i) =>
+    `<li data-i="${i}"><i class="sw" style="background:${colorOf(o.species)}"></i>${esc(o.species)}<small>${esc(fmt(o.observed_at))}</small></li>`).join('')
+    || '<li class="empty">Nothing to show.</li>';
+
+  // click a catch in the list: fly there, ring it, and open that catch's own popup
+  document.querySelectorAll('#list li[data-i]').forEach(li => li.onclick = () => {
+    const o = obs[li.dataset.i];
+    const others = obs.filter(x => x !== o && locKey(x) === locKey(o)).length;
+    const html =
+      `<strong>${esc(o.species)}</strong><br>` +
+      `${esc(fmt(o.observed_at))}<br>` +
+      `${o.lat.toFixed(5)}, ${o.lng.toFixed(5)}` +
+      (others ? `<hr><small>${others} other catch${others > 1 ? 'es' : ''} at this spot</small>` : '');
+    map.flyTo([o.lat, o.lng], 16);
+    L.popup({ autoPan: false, offset: [0, -10] })
+      .setLatLng([o.lat, o.lng])
+      .setContent(html)
+      .openOn(map);
+    highlight(o);
+  });
+
+  if (fit && obs.length) map.fitBounds(obs.map(o => [o.lat, o.lng]), { padding: [40, 40], maxZoom: 16 });
+}
+
+['species', 'from', 'to'].forEach(id => $(id).addEventListener('change', () => apply(true)));
+$('reset').onclick = () => { $('species').value = ''; $('from').value = ''; $('to').value = ''; apply(true); };
+$('refresh').onclick = () => { loadAll(false); showPressure(); };
+
+// ---------- generic database function call ----------
+async function rpc(name, body) {
+  const call = () => fetch(`${SB_URL}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  let r = await call();
+  if (r.status === 401 && await refreshSession()) r = await call();
+  if (!r.ok) throw new Error('Could not reach the server.');
+  return r.json();
+}
+
+// ---------- claim a device ----------
+$('claimBtn').onclick = async () => {
+  const code = $('claimCode').value.trim();
+  if (!code) { $('claimMsg').textContent = 'Enter the code printed on your device.'; return; }
+  $('claimBtn').disabled = true;
+  $('claimMsg').textContent = 'Checking...';
+  try {
+    const res = await rpc('claim_device', { p_code: code });
+    if (res.ok) {
+      $('claimCode').value = '';
+      $('claimMsg').textContent = 'Added ' + res.name + '. Loading its catches...';
+      await loadAll(true);
+      loadDevices();
+      showPressure();
+      $('claimMsg').textContent = 'Added ' + res.name + '.';
+    } else {
+      $('claimMsg').textContent = res.message;
+    }
+  } catch (e) {
+    $('claimMsg').textContent = e.message;
+  }
+  $('claimBtn').disabled = false;
+};
+
+// ---------- device settings ----------
+async function loadDevices() {
+  const call = () => fetch(`${SB_URL}/rest/v1/devices?select=device_id,device_name&order=registered_at`, {
+    headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token }
+  });
+  let r = await call();
+  if (r.status === 401 && await refreshSession()) r = await call();
+  if (!r.ok) return;
+  const list = await r.json();
+  const sel = $('setDevice');
+  sel.innerHTML = '';
+  list.forEach(d => {
+    const o = document.createElement('option');
+    o.value = d.device_id;
+    o.textContent = d.device_name || d.device_id.slice(0, 8);
+    sel.appendChild(o);
+  });
+  $('settingsBox').hidden = list.length === 0;
+  if (list.length) loadDeviceSettings();
+}
+
+const DEFAULT_SP = ['Brown Trout', 'Rainbow Trout', 'Brook Trout', 'Cutthroat Trout'];
+const SHORT_SP = ['Brown', 'Rainbow', 'Brook', 'Cutthroat'];
+
+async function loadSpeciesList() {
+  const call = () => fetch(`${SB_URL}/rest/v1/mycopy_fish_types?select=species_of_fish&order=id`, {
+    headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token }
+  });
+  let r = await call();
+  if (r.status === 401 && await refreshSession()) r = await call();
+  if (!r.ok) return;
+  const list = $('speciesList');
+  list.innerHTML = '';
+  (await r.json()).forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.species_of_fish;
+    list.appendChild(o);
+  });
+}
+
+function fillSpecies() {
+  for (let i = 0; i < 4; i++) $('btnSp' + i).value = DEFAULT_SP[i];
+}
+
+async function loadDeviceSettings() {
+  await loadSpeciesList();
+  fillSpecies();
+  $('setInterval').value = 30; $('setLed').value = 50; $('setUploads').checked = true;
+  let s = null;
+  try { s = await rpc('load_settings', { p_device_id: $('setDevice').value }); } catch (e) {}
+  const wifi = (s && s.wifi) || [];
+  for (let i = 0; i < 3; i++) {
+    $('wifiSsid' + i).value = wifi[i] ? wifi[i].ssid : '';
+    $('wifiPw' + i).value = '';
+    $('wifiPw' + i).placeholder = wifi[i] && wifi[i].has_password ? 'Saved (blank keeps it)' : 'Password';
+  }
+  if (s) {
+    (s.buttons || []).forEach(b => {
+      if (b.button < 1 || b.button > 4) return;
+      let name = b.species || DEFAULT_SP[b.button - 1];
+      if (SHORT_SP.includes(name)) name += ' Trout';
+      $('btnSp' + (b.button - 1)).value = name;
+    });
+    if (s.upload_interval_s) $('setInterval').value = s.upload_interval_s;
+    if (s.led_brightness !== undefined) $('setLed').value = s.led_brightness;
+    if (s.uploads_enabled !== undefined) $('setUploads').checked = s.uploads_enabled;
+  }
+  $('setMsg').textContent = '';
+}
+
+$('setDevice').onchange = loadDeviceSettings;
+
+$('saveSettings').onclick = async () => {
+  $('saveSettings').disabled = true;
+  $('setMsg').textContent = 'Saving...';
+  try {
+    const wifi = [];
+    for (let i = 0; i < 3; i++) {
+      const ssid = $('wifiSsid' + i).value.trim();
+      if (ssid) wifi.push({ ssid, password: $('wifiPw' + i).value });
+    }
+    const buttons = [];
+    for (let i = 0; i < 4; i++) {
+      const sp = await rpc('add_species', { p_name: $('btnSp' + i).value });
+      if (!sp.ok) throw new Error('Button ' + (i + 1) + ': ' + sp.message);
+      buttons.push({ button: i + 1, species: sp.name, fish_type_id: sp.id });
+    }
+    const settings = {
+      version: 1,
+      profile_name: 'Default',
+      wifi, buttons,
+      upload_interval_s: Math.min(3600, Math.max(10, +$('setInterval').value || 30)),
+      uploads_enabled: $('setUploads').checked,
+      gps_max_age_ms: 5000,
+      debounce_ms: 30,
+      led_brightness: Math.min(100, Math.max(0, +$('setLed').value || 0))
+    };
+    const res = await rpc('save_settings', { p_device_id: $('setDevice').value, p_settings: settings });
+    $('setMsg').textContent = res.ok ? 'Saved. The unit picks it up next time it connects.' : res.message;
+    if (res.ok) loadDeviceSettings();
+  } catch (e) { $('setMsg').textContent = e.message; }
+  $('saveSettings').disabled = false;
+};
+
+// ---------- fishing pressure data ----------
+async function loadPressure() {
+  try {
+    const cells = await rpc('pressure_cells', { p_days: 730 });
+    if (!Array.isArray(cells)) return;
+    pressureLayer.setCells(cells.map(c => ({
+      lat: c.cell_lat, lng: c.cell_lng, t: Math.min(1, Math.max(0, c.intensity))
+    })));
+  } catch (e) { console.error(e); }
+}
+async function showPressure() {
+  await loadPressure();
+  if ($('showPressure').checked) pressureLayer.addTo(map);
+}
+$('showPressure').onchange = () => {
+  if ($('showPressure').checked) pressureLayer.addTo(map);
+  else pressureLayer.remove();
+};
+
+// ---------- start ----------
+function start() {
+  if (!session) { showLogin(); return; }
+  $('login').hidden = true;
+  $('who').textContent = (session.user && session.user.email) || '';
+  loadAll(true);
+  loadDevices();
+  showPressure();
+}
+
+async function consumeEmailLink() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const at = h.get('access_token');
+  if (!at) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, {
+      headers: { apikey: SB_KEY, Authorization: 'Bearer ' + at }
+    });
+    const user = await r.json();
+    if (!r.ok) throw new Error('Could not confirm');
+    setSession({ access_token: at, refresh_token: h.get('refresh_token'), user });
+  } catch (e) { setSession(null); }
+}
+consumeEmailLink().then(start);
+</script>
+</body>
+</html>
