@@ -1,0 +1,96 @@
+-- 005_device_functions.sql
+-- Snapshot of the three public PostgreSQL functions exported from Supabase
+-- on 2026-10-25. Functions are reproduced without behavioral changes.
+--
+-- DEPENDENCIES:
+--   public.users_data, public.devices, public.claim_attempts,
+--   public.mycopy_fish_types, public.mycopy_fish_observations
+--   pgcrypto functions gen_random_bytes(), sha256(), gen_random_uuid()
+--
+-- IMPORTANT:
+--   This is for documenting / recreating the database, NOT for running
+--   against the currently working Supabase project.
+--   Apply the final function EXECUTE grants after these functions are created.
+--   Do not commit actual device secrets or claim codes.
+--   SECURITY DEFINER routines need a separate security review before deployment.
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.claim_device(p_code text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+DECLARE uid uuid := auth.uid(); h text; d public.devices%ROWTYPE; recent int;
+BEGIN
+  IF uid IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'message', 'Please sign in first.');
+  END IF;
+
+  SELECT count(*) INTO recent FROM public.claim_attempts
+   WHERE user_id = uid AND attempted_at > now() - interval '1 hour';
+  IF recent >= 10 THEN
+    RETURN jsonb_build_object('ok', false, 'message', 'Too many wrong codes. Try again in an hour.');
+  END IF;
+
+  h := encode(sha256(convert_to(upper(regexp_replace(p_code, '[^A-Za-z0-9]', '', 'g')), 'utf8')), 'hex');
+  SELECT * INTO d FROM public.devices WHERE claim_code_hash = h AND user_id IS NULL FOR UPDATE;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.claim_attempts (user_id) VALUES (uid);
+    RETURN jsonb_build_object('ok', false, 'message', 'Code not found or already used.');
+  END IF;
+
+  UPDATE public.devices SET user_id = uid WHERE device_id = d.device_id;
+  UPDATE public.mycopy_fish_observations SET user_id = uid
+   WHERE registered_device_id = d.device_id AND user_id IS NULL;
+
+  RETURN jsonb_build_object('ok', true, 'name', coalesce(d.device_name, 'your device'));
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.ingest_catch(p_device_id uuid, p_secret text, p_fish_type integer, p_caught_at timestamp with time zone, p_lat double precision, p_lng double precision)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'extensions'
+AS $function$
+DECLARE
+    d public.devices%ROWTYPE;
+BEGIN
+    SELECT *
+    INTO d
+    FROM public.devices
+    WHERE device_id = p_device_id
+      AND is_active = true
+      AND secret_hash = encode(
+          sha256(convert_to(p_secret, 'utf8')),
+          'hex'
+      );
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Unknown device'
+        USING ERRCODE = '28000';
+    END IF;
+
+    -- Device must be registered to a user.
+    IF d.user_id IS NULL THEN
+        RAISE EXCEPTION 'Device must be registered before uploading'
+        USING ERRCODE = '28000';
+    END IF;
+
+    -- Verify that the fish type is valid.
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.mycopy_fish_types
+        WHERE id = p_fish_type
+          AND (
+              created_by IS NULL
+              OR created_by = d.user_id
+          )
+    ) THEN
+        RAISE EXCEPTION 'Unknown species';
+    END IF;
+
+    -- Store the catch under the registered owner.
